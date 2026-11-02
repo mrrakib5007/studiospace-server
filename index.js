@@ -26,6 +26,7 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("studio_space");
 const studiosCollection = db.collection("studios");
+const bookingsCollection = db.collection("bookings");
 
 // API check
 app.get("/", (req, res) => {
@@ -399,6 +400,158 @@ app.delete("/api/studios/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to delete studio workspace",
+      error: error.message,
+    });
+  }
+});
+
+// Create new Booking
+app.post("/api/bookings", async (req, res) => {
+  try {
+    const {
+      studioId,
+      studioTitle,
+      studioImage,
+      studioLocation,
+      category,
+      hourlyRate,
+      userEmail,
+      userName,
+      bookingDate,
+      startTime,
+      endTime,
+      totalHours,
+      totalPrice,
+    } = req.body;
+
+    if (!userEmail || !userEmail.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "User email is required to book a studio",
+      });
+    }
+
+    if (!bookingDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Booking date is required",
+      });
+    }
+
+    const newBooking = {
+      studioId: studioId ? String(studioId) : "",
+      studioTitle: studioTitle || "Creative Studio Space",
+      studioImage:
+        studioImage ||
+        "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=1200&auto=format&fit=crop",
+      studioLocation: studioLocation || "Location on request",
+      category: category || "Studio Space",
+      hourlyRate: Number(hourlyRate) || 0,
+      userEmail: userEmail.trim(),
+      userName: userName || "Creator",
+      bookingDate: String(bookingDate),
+      startTime: startTime || "10:00",
+      endTime: endTime || "14:00",
+      totalHours: Number(totalHours) || 1,
+      totalPrice: Number(totalPrice) || 0,
+      status: "Pending", // Default status per specification
+      createdAt: new Date(),
+    };
+
+    const result = await bookingsCollection.insertOne(newBooking);
+
+    res.status(201).json({
+      success: true,
+      message: "Studio reservation requested successfully!",
+      insertedId: result.insertedId,
+      booking: { ...newBooking, _id: result.insertedId },
+    });
+  } catch (error) {
+    console.error("Error creating booking:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create booking reservation",
+      error: error.message,
+    });
+  }
+});
+
+// Get Bookings
+app.get("/api/bookings", async (req, res) => {
+  try {
+    const { userEmail } = req.query;
+    const filter = {};
+
+    if (userEmail && userEmail.trim() !== "") {
+      filter.userEmail = userEmail.trim();
+    }
+
+    const bookings = await bookingsCollection
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      count: bookings.length,
+      bookings,
+    });
+  } catch (error) {
+    console.error("Error fetching bookings:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch bookings",
+      error: error.message,
+    });
+  }
+});
+
+// Cancel a Booking
+app.patch("/api/bookings/:id/cancel", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking reservation not found",
+      });
+    }
+
+    const booking = await bookingsCollection.findOne({ _id: new ObjectId(id) });
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking reservation not found",
+      });
+    }
+
+    if (booking.status !== "Pending") {
+      return res.status(400).json({
+        success: false,
+        message: `Only pending reservations can be cancelled. Current status is ${booking.status}.`,
+      });
+    }
+
+    await bookingsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          status: "Cancelled",
+          cancelledAt: new Date(),
+        },
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Booking reservation cancelled successfully!",
+    });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to cancel booking reservation",
       error: error.message,
     });
   }
