@@ -8,7 +8,8 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
 const client = new MongoClient(process.env.MONGODB_URI);
 
@@ -29,6 +30,69 @@ const studiosCollection = db.collection("studios");
 // API check
 app.get("/", (req, res) => {
   res.send("Server is online");
+});
+
+// Image Upload
+app.post("/api/upload", async (req, res) => {
+  try {
+    const { image, name } = req.body;
+
+    if (!image) {
+      return res.status(400).json({
+        success: false,
+        message: "No image data provided for upload",
+      });
+    }
+
+    const apiKey = process.env.IMGBB_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({
+        success: false,
+        message: "IMGBB_API_KEY is not configured on the server",
+      });
+    }
+
+    // Extract raw base64 string if data URL is provided
+    const base64Data = image.includes("base64,")
+      ? image.split("base64,")[1]
+      : image;
+
+    const buffer = Buffer.from(base64Data, "base64");
+    const blob = new Blob([buffer], { type: "image/jpeg" });
+
+    const form = new FormData();
+    form.append("image", blob, name || "photo.jpg");
+
+    const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
+      method: "POST",
+      body: form,
+    });
+
+    const data = await imgbbRes.json();
+
+    if (!data.success) {
+      console.error("ImgBB upload failed:", data);
+      return res.status(400).json({
+        success: false,
+        message: data?.error?.message || "Failed to upload image to ImgBB",
+      });
+    }
+
+    const imageUrl = data?.data?.display_url || data?.data?.url;
+
+    res.status(200).json({
+      success: true,
+      url: imageUrl,
+      data: data.data,
+    });
+  } catch (error) {
+    console.error("Error in /api/upload:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error while uploading image",
+      error: error.message,
+    });
+  }
 });
 
 app.get("/api/studios", async (req, res) => {
@@ -97,9 +161,9 @@ app.get("/api/studios/:id", async (req, res) => {
     const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
+      return res.status(404).json({
         success: false,
-        message: "Invalid studio ID format",
+        message: "Studio workspace not found",
       });
     }
 
@@ -126,9 +190,11 @@ app.get("/api/studios/:id", async (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+if (process.env.VERCEL !== "1") {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
 
 
 export default app;
