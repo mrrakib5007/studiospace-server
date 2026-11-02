@@ -63,10 +63,13 @@ app.post("/api/upload", async (req, res) => {
     const form = new FormData();
     form.append("image", blob, name || "photo.jpg");
 
-    const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, {
-      method: "POST",
-      body: form,
-    });
+    const imgbbRes = await fetch(
+      `https://api.imgbb.com/1/upload?key=${apiKey}`,
+      {
+        method: "POST",
+        body: form,
+      },
+    );
 
     const data = await imgbbRes.json();
 
@@ -95,17 +98,25 @@ app.post("/api/upload", async (req, res) => {
   }
 });
 
+// Get Studios
 app.get("/api/studios", async (req, res) => {
   try {
-    const { category, search, sort, limit } = req.query;
+    const { category, search, sort, limit, page, ownerEmail } = req.query;
     const filter = {};
+
+    // Filter by owner email (e.g. for user's own studio listings)
+    if (ownerEmail && ownerEmail.trim() !== "") {
+      filter.ownerEmail = ownerEmail.trim();
+    }
 
     // Filter by category
     if (category && category !== "All") {
       let catPattern = category.trim();
       if (/^photo studio/i.test(catPattern)) catPattern = "Photo Studio";
-      else if (/^(film stage|sound stage)/i.test(catPattern)) catPattern = "Film Stage";
-      else if (/^podcast (lounge|room)/i.test(catPattern)) catPattern = "Podcast Lounge";
+      else if (/^(film stage|sound stage)/i.test(catPattern))
+        catPattern = "Film Stage";
+      else if (/^podcast (lounge|room)/i.test(catPattern))
+        catPattern = "Podcast Lounge";
       else if (/^music suite/i.test(catPattern)) catPattern = "Music Suite";
       else if (/^art workshop/i.test(catPattern)) catPattern = "Art Workshop";
 
@@ -134,16 +145,31 @@ app.get("/api/studios", async (req, res) => {
       sortQuery = { createdAt: -1 };
     }
 
-    let cursor = studiosCollection.find(filter).sort(sortQuery);
-    if (limit) {
-      cursor = cursor.limit(parseInt(limit, 10));
-    }
+    // Count total matching documents
+    const total = await studiosCollection.countDocuments(filter);
 
-    const studios = await cursor.toArray();
+    // Pagination defaults: 12 studios per page
+    const parsedLimit = limit ? Math.max(1, parseInt(limit, 10)) : 12;
+    const parsedPage = page ? Math.max(1, parseInt(page, 10)) : 1;
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    const totalPages = Math.ceil(total / parsedLimit);
+    const hasMore = parsedPage < totalPages;
+
+    const studios = await studiosCollection
+      .find(filter)
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(parsedLimit)
+      .toArray();
 
     res.status(200).json({
       success: true,
       count: studios.length,
+      total,
+      page: parsedPage,
+      totalPages,
+      hasMore,
       studios,
     });
   } catch (error) {
@@ -156,6 +182,7 @@ app.get("/api/studios", async (req, res) => {
   }
 });
 
+// Get studio details by id
 app.get("/api/studios/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -189,12 +216,95 @@ app.get("/api/studios/:id", async (req, res) => {
   }
 });
 
+// Create New Studio
+app.post("/api/studios", async (req, res) => {
+  try {
+    const {
+      title,
+      category,
+      hourlyRate,
+      securityDeposit,
+      maxCapacity,
+      location,
+      image,
+      amenities,
+      overview,
+      ownerName,
+      ownerEmail,
+    } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Studio title is required",
+      });
+    }
+
+    if (!location || !location.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Location is required",
+      });
+    }
+
+    if (!hourlyRate || isNaN(Number(hourlyRate)) || Number(hourlyRate) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid hourly rate is required",
+      });
+    }
+
+    // Default creative studio image fallback if empty
+    const defaultImage =
+      image && image.trim() !== ""
+        ? image.trim()
+        : "https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=1200&auto=format&fit=crop";
+
+    const newStudio = {
+      title: title.trim(),
+      category: category ? category.trim() : "Photo Studio",
+      hourlyRate: Number(hourlyRate),
+      securityDeposit:
+        securityDeposit && !isNaN(Number(securityDeposit))
+          ? Number(securityDeposit)
+          : 150,
+      maxCapacity:
+        maxCapacity && !isNaN(Number(maxCapacity)) ? Number(maxCapacity) : 15,
+      location: location.trim(),
+      image: defaultImage,
+      amenities: Array.isArray(amenities) ? amenities : [],
+      overview: overview,
+      rating: 5.0,
+      reviewCount: 0,
+      ownerName: ownerName,
+      ownerEmail: ownerEmail,
+      createdAt: new Date(),
+      images: [],
+    };
+
+    const result = await studiosCollection.insertOne(newStudio);
+
+    res.status(201).json({
+      success: true,
+      message: "Studio workspace listed successfully!",
+      insertedId: result.insertedId,
+      studio: { ...newStudio, _id: result.insertedId },
+    });
+  } catch (error) {
+    console.error("Error creating studio workspace:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to create studio workspace",
+      error: error.message,
+    });
+  }
+});
+
 // Start server
 if (process.env.VERCEL !== "1") {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });
 }
-
 
 export default app;
