@@ -557,6 +557,73 @@ app.patch("/api/bookings/:id/cancel", async (req, res) => {
   }
 });
 
+// User Studio & Booking Statistics for Profile
+app.get(["/api/user-stats", "/api/users/stats"], async (req, res) => {
+  try {
+    const email = (req.query.email || req.query.userEmail || "").trim();
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "User email parameter is required",
+      });
+    }
+
+    // 1. Count user-owned studios
+    const myStudiosCount = await studiosCollection.countDocuments({
+      ownerEmail: email,
+    });
+
+    // 2. Fetch all user bookings
+    const userBookings = await bookingsCollection
+      .find({ userEmail: email })
+      .toArray();
+
+    const totalBookings = userBookings.length;
+    const pendingBookings = userBookings.filter(
+      (b) => b.status === "Pending"
+    ).length;
+    const confirmedBookings = userBookings.filter(
+      (b) => b.status === "Confirmed"
+    ).length;
+    const completedBookings = userBookings.filter(
+      (b) => b.status === "Completed"
+    ).length;
+    const cancelledBookings = userBookings.filter(
+      (b) => b.status === "Cancelled"
+    ).length;
+
+    // Upcoming shoots (Pending or Confirmed bookings)
+    const upcomingShoots = pendingBookings + confirmedBookings;
+
+    // Total spent across non-cancelled bookings
+    const totalSpent = userBookings
+      .filter((b) => b.status !== "Cancelled")
+      .reduce((sum, b) => sum + (Number(b.totalPrice) || 0), 0);
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        totalBookings,
+        myStudios: myStudiosCount,
+        upcomingShoots,
+        totalSpent,
+        pendingBookings,
+        confirmedBookings,
+        completedBookings,
+        cancelledBookings,
+      },
+    });
+  } catch (error) {
+    console.error("Error calculating user studio statistics:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to calculate user studio statistics",
+      error: error.message,
+    });
+  }
+});
+
 // Start server
 if (process.env.VERCEL !== "1") {
   app.listen(PORT, () => {
