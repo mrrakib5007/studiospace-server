@@ -300,6 +300,110 @@ app.post("/api/studios", async (req, res) => {
   }
 });
 
+// Update Studio by id
+app.put("/api/studios/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Studio workspace not found",
+      });
+    }
+
+    const {
+      title,
+      category,
+      hourlyRate,
+      securityDeposit,
+      maxCapacity,
+      location,
+      image,
+      amenities,
+      overview,
+    } = req.body;
+
+    const updateDoc = {};
+
+    if (title && title.trim()) updateDoc.title = title.trim();
+    if (category && category.trim()) updateDoc.category = category.trim();
+    if (hourlyRate !== undefined && !isNaN(Number(hourlyRate))) {
+      updateDoc.hourlyRate = Number(hourlyRate);
+    }
+    if (securityDeposit !== undefined && !isNaN(Number(securityDeposit))) {
+      updateDoc.securityDeposit = Number(securityDeposit);
+    }
+    if (maxCapacity !== undefined && !isNaN(Number(maxCapacity))) {
+      updateDoc.maxCapacity = Number(maxCapacity);
+    }
+    if (location && location.trim()) updateDoc.location = location.trim();
+    if (image && image.trim()) updateDoc.image = image.trim();
+    if (Array.isArray(amenities)) updateDoc.amenities = amenities;
+    if (overview !== undefined) updateDoc.overview = overview.trim();
+    updateDoc.updatedAt = new Date();
+
+    const result = await studiosCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateDoc }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Studio workspace not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Studio workspace updated successfully!",
+    });
+  } catch (error) {
+    console.error("Error updating studio workspace:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update studio workspace",
+      error: error.message,
+    });
+  }
+});
+
+// Delete Studio by id
+app.delete("/api/studios/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Studio workspace not found",
+      });
+    }
+
+    const result = await studiosCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Studio workspace not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Studio listing deleted successfully!",
+    });
+  } catch (error) {
+    console.error("Error deleting studio workspace:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete studio workspace",
+      error: error.message,
+    });
+  }
+});
+
 // Start server
 if (process.env.VERCEL !== "1") {
   app.listen(PORT, () => {
