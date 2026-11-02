@@ -92,6 +92,38 @@ app.get("/api/studios", async (req, res) => {
   }
 });
 
+app.get("/api/studios/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid studio ID format",
+      });
+    }
+
+    const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
+    if (!studio) {
+      return res.status(404).json({
+        success: false,
+        message: "Studio workspace not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      studio,
+    });
+  } catch (error) {
+    console.error("Error fetching studio details:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch studio details",
+      error: error.message,
+    });
+  }
+});
 
 // Start server
 app.listen(PORT, () => {
