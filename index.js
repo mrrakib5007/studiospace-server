@@ -2,12 +2,34 @@ import express from "express";
 import cors from "cors";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
+import jwt from "jsonwebtoken";
+import cookieParser from "cookie-parser";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Allowed CORS origins
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5000",
+  "https://studiospace-pro.vercel.app",
+  "https://api-studiospace.vercel.app",
+  process.env.CLIENT_URL,
+].filter(Boolean);
+
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
+    credentials: true,
+  })
+);
+app.use(cookieParser());
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
@@ -27,6 +49,141 @@ const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("studio_space");
 const studiosCollection = db.collection("studios");
 const bookingsCollection = db.collection("bookings");
+
+// HTTPOnly Cookie Configuration
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+};
+
+// JWT Verification Middleware for mutations
+export const verifyJWT = async (req, res, next) => {
+  // Check for JWT token in HTTPOnly cookies or Authorization header
+  const token =
+    req.cookies?.token ||
+    (req.headers?.authorization?.startsWith("Bearer ")
+      ? req.headers.authorization.split(" ")[1]
+      : null);
+
+  // Check for better auth session cookie if token cookie not present
+  const betterAuthToken =
+    req.cookies?.["better-auth.session_token"] ||
+    req.cookies?.["__Secure-better-auth.session_token"];
+
+  if (!token && !betterAuthToken) {
+    return res.status(401).json({
+      success: false,
+      message: "401 Unauthorized: Access token missing",
+    });
+  }
+
+  if (token) {
+    try {
+      const secret =
+        process.env.ACCESS_TOKEN_SECRET ||
+        process.env.JWT_SECRET;
+      const decoded = jwt.verify(token, secret);
+      req.user = decoded;
+      return next();
+    } catch (err) {
+      if (!betterAuthToken) {
+        return res.status(401).json({
+          success: false,
+          message: "401 Unauthorized: Invalid or expired access token",
+        });
+      }
+    }
+  }
+
+  // Fallback check for Better-Auth session in database
+  if (betterAuthToken) {
+    try {
+      const sessionsCollection = db.collection("session");
+      const sessionDoc = await sessionsCollection.findOne({
+        token: betterAuthToken,
+        expiresAt: { $gt: new Date() },
+      });
+
+      if (sessionDoc) {
+        const usersCollection = db.collection("user");
+        const userDoc = await usersCollection.findOne({
+          _id: sessionDoc.userId,
+        });
+        req.user = {
+          id: sessionDoc.userId,
+          email: userDoc?.email || sessionDoc.userId,
+          name: userDoc?.name,
+        };
+        return next();
+      }
+    } catch (sessionErr) {
+      console.error("Session verification error:", sessionErr);
+    }
+  }
+
+  return res.status(401).json({
+    success: false,
+    message: "401 Unauthorized: Access denied",
+  });
+};
+
+// Issue JWT and store in HTTPOnly Cookie
+app.post("/api/jwt", async (req, res) => {
+  try {
+    const user = req.body || {};
+    if (!user.email) {
+      return res.status(400).json({
+        success: false,
+        message: "User email is required to issue JWT",
+      });
+    }
+
+    const secret = process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET;
+
+    const token = jwt.sign(
+      { email: user.email, name: user.name},
+      secret,
+      { expiresIn: "7d" }
+    );
+
+    res
+      .cookie("token", token, cookieOptions)
+      .status(200)
+      .json({
+        success: true,
+        message: "JWT stored in HTTPOnly cookie successfully",
+        token,
+      });
+  } catch (error) {
+    console.error("Error creating JWT:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to issue JWT token",
+      error: error.message,
+    });
+  }
+});
+
+// Logout endpoint: clears HTTPOnly JWT cookie
+app.post("/api/logout", async (req, res) => {
+  try {
+    res
+      .clearCookie("token", cookieOptions)
+      .status(200)
+      .json({
+        success: true,
+        message: "Logged out and cleared HTTPOnly cookie successfully",
+      });
+  } catch (error) {
+    console.error("Error clearing cookie on logout:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to clear authentication cookie",
+      error: error.message,
+    });
+  }
+});
 
 // API check
 app.get("/", (req, res) => {
@@ -218,7 +375,7 @@ app.get("/api/studios/:id", async (req, res) => {
 });
 
 // Create New Studio
-app.post("/api/studios", async (req, res) => {
+app.post("/api/studios", verifyJWT, async (req, res) => {
   try {
     const {
       title,
@@ -302,7 +459,7 @@ app.post("/api/studios", async (req, res) => {
 });
 
 // Update Studio by id
-app.put("/api/studios/:id", async (req, res) => {
+app.put("/api/studios/:id", verifyJWT, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -371,7 +528,7 @@ app.put("/api/studios/:id", async (req, res) => {
 });
 
 // Delete Studio by id
-app.delete("/api/studios/:id", async (req, res) => {
+app.delete("/api/studios/:id", verifyJWT, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -405,8 +562,23 @@ app.delete("/api/studios/:id", async (req, res) => {
   }
 });
 
+// Helper to convert HH:MM string to minutes
+function timeToMinutes(timeStr, fallbackMinutes = 0) {
+  if (!timeStr || typeof timeStr !== "string") return fallbackMinutes;
+  const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return fallbackMinutes;
+  const hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  return hours * 60 + minutes;
+}
+
+// Helper to check if two intervals overlap
+function isTimeOverlapping(startA, endA, startB, endB) {
+  return startA < endB && endA > startB;
+}
+
 // Create new Booking
-app.post("/api/bookings", async (req, res) => {
+app.post("/api/bookings", verifyJWT, async (req, res) => {
   try {
     const {
       studioId,
@@ -438,8 +610,77 @@ app.post("/api/bookings", async (req, res) => {
       });
     }
 
+    if (!studioId) {
+      return res.status(400).json({
+        success: false,
+        message: "Studio ID is required to book a studio",
+      });
+    }
+
+    const studioIdStr = String(studioId).trim();
+    const requestedDate = String(bookingDate).trim();
+    const reqStartStr = startTime || "10:00";
+    const parsedHours = Number(totalHours) > 0 ? Number(totalHours) : 1;
+
+    // Convert requested slot to minutes
+    const reqStartMinutes = timeToMinutes(reqStartStr, 600);
+    let reqEndMinutes = timeToMinutes(
+      endTime,
+      reqStartMinutes + parsedHours * 60
+    );
+    if (reqEndMinutes <= reqStartMinutes) {
+      reqEndMinutes = reqStartMinutes + parsedHours * 60;
+    }
+
+    // Double Booking Prevention
+    const existingConfirmed = await bookingsCollection
+      .find({
+        studioId: studioIdStr,
+        bookingDate: requestedDate,
+        status: { $regex: /^confirmed$/i },
+      })
+      .toArray();
+
+    // Check for collision
+    const collision = existingConfirmed.find((confirmedBooking) => {
+      const exStartMinutes = timeToMinutes(confirmedBooking.startTime, 600);
+      const exHours =
+        Number(confirmedBooking.totalHours) > 0
+          ? Number(confirmedBooking.totalHours)
+          : 1;
+      let exEndMinutes = timeToMinutes(
+        confirmedBooking.endTime,
+        exStartMinutes + exHours * 60
+      );
+      if (exEndMinutes <= exStartMinutes) {
+        exEndMinutes = exStartMinutes + exHours * 60;
+      }
+
+      return isTimeOverlapping(
+        reqStartMinutes,
+        reqEndMinutes,
+        exStartMinutes,
+        exEndMinutes
+      );
+    });
+
+    if (collision) {
+      const conflictStart = collision.startTime || "start time";
+      const conflictEnd = collision.endTime || "end time";
+      return res.status(409).json({
+        success: false,
+        message: `Double-Booking Collision: This studio already has a Confirmed reservation on ${requestedDate} from ${conflictStart} to ${conflictEnd}. Please select an alternative time slot or date.`,
+        conflict: {
+          studioId: studioIdStr,
+          bookingDate: requestedDate,
+          startTime: conflictStart,
+          endTime: conflictEnd,
+        },
+      });
+    }
+
     const newBooking = {
-      studioId: studioId ? String(studioId) : "",
+      studioId: studioIdStr,
       studioTitle: studioTitle || "Creative Studio Space",
       studioImage:
         studioImage ||
@@ -449,10 +690,14 @@ app.post("/api/bookings", async (req, res) => {
       hourlyRate: Number(hourlyRate) || 0,
       userEmail: userEmail.trim(),
       userName: userName || "Creator",
-      bookingDate: String(bookingDate),
-      startTime: startTime || "10:00",
-      endTime: endTime || "14:00",
-      totalHours: Number(totalHours) || 1,
+      bookingDate: requestedDate,
+      startTime: reqStartStr,
+      endTime:
+        endTime ||
+        `${String(Math.floor(reqEndMinutes / 60)).padStart(2, "0")}:${String(
+          reqEndMinutes % 60
+        ).padStart(2, "0")}`,
+      totalHours: parsedHours,
       totalPrice: Number(totalPrice) || 0,
       status: "Pending", // Default status per specification
       createdAt: new Date(),
@@ -507,7 +752,7 @@ app.get("/api/bookings", async (req, res) => {
 });
 
 // Cancel a Booking
-app.patch("/api/bookings/:id/cancel", async (req, res) => {
+app.patch("/api/bookings/:id/cancel", verifyJWT, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -557,8 +802,112 @@ app.patch("/api/bookings/:id/cancel", async (req, res) => {
   }
 });
 
-// User Studio & Booking Statistics for Profile
-app.get(["/api/user-stats", "/api/users/stats"], async (req, res) => {
+// double booking protection when confirming
+app.patch("/api/bookings/:id/status", verifyJWT, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking reservation not found",
+      });
+    }
+
+    const validStatuses = ["Pending", "Confirmed", "Completed", "Cancelled"];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+      });
+    }
+
+    const targetBooking = await bookingsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+    if (!targetBooking) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking reservation not found",
+      });
+    }
+
+    // If changing to "Confirmed", verify no overlap with other Confirmed bookings
+    if (status === "Confirmed") {
+      const studioIdStr = String(targetBooking.studioId || "").trim();
+      const requestedDate = String(targetBooking.bookingDate || "").trim();
+
+      const existingConfirmed = await bookingsCollection
+        .find({
+          _id: { $ne: new ObjectId(id) },
+          studioId: studioIdStr,
+          bookingDate: requestedDate,
+          status: { $regex: /^confirmed$/i },
+        })
+        .toArray();
+
+      const reqStartMinutes = timeToMinutes(targetBooking.startTime, 600);
+      let reqEndMinutes = timeToMinutes(
+        targetBooking.endTime,
+        reqStartMinutes + (Number(targetBooking.totalHours) || 1) * 60
+      );
+      if (reqEndMinutes <= reqStartMinutes) {
+        reqEndMinutes =
+          reqStartMinutes + (Number(targetBooking.totalHours) || 1) * 60;
+      }
+
+      const collision = existingConfirmed.find((ex) => {
+        const exStart = timeToMinutes(ex.startTime, 600);
+        let exEnd = timeToMinutes(
+          ex.endTime,
+          exStart + (Number(ex.totalHours) || 1) * 60
+        );
+        if (exEnd <= exStart) {
+          exEnd = exStart + (Number(ex.totalHours) || 1) * 60;
+        }
+        return isTimeOverlapping(reqStartMinutes, reqEndMinutes, exStart, exEnd);
+      });
+
+      if (collision) {
+        return res.status(409).json({
+          success: false,
+          message: `Double-Booking Collision: Studio already has a Confirmed reservation on ${requestedDate} from ${collision.startTime} to ${collision.endTime}. Cannot confirm this reservation.`,
+          conflict: {
+            bookingDate: collision.bookingDate,
+            startTime: collision.startTime,
+            endTime: collision.endTime,
+          },
+        });
+      }
+    }
+
+    await bookingsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          status,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Booking status updated to ${status} successfully!`,
+    });
+  } catch (error) {
+    console.error("Error updating booking status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update booking status",
+      error: error.message,
+    });
+  }
+});
+
+// Statistics for Profile
+app.get("/api/user-stats", async (req, res) => {
   try {
     const email = (req.query.email || req.query.userEmail || "").trim();
 
